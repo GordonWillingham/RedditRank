@@ -1,0 +1,18 @@
+# Dependencies / build output
+node_modules/
+dist/
+
+# Secrets — never commit
+.env
+.env.*
+server/.env
+!server/.env.example
+
+# Local data caches (baked copies live in public/data for static builds)
+server/data/judgments.json
+
+# OS / editor noise
+.DS_Store
+*.log
+.vscode/
+.idea/
