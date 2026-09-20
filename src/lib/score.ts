@@ -23,23 +23,113 @@ export interface ScoredPost {
 
 const CLICKBAIT_RE =
   /(you won't believe|won't believe|shocking|outrage|epic fail|destroyed|is dead|is dying|gone wrong|\brant\b|existential risk|violently|skyrocket|mind-blowing|insane|rip |\[rant\])/i
-const TECH_TERM_RE =
-  /\b(compiler|memory|allocat|type system|async|runtime|kernel|emulat|gpu|cache|index|query|parser|lexer|garbage|borrow| ownership|parallel|concurren|distribut|raft|consensus|encryption|unicode|render|shader|ffi|abi|simd|vectoriz)\b/i
+const SUBSTANTIVE_RE =
+  /\b(compiler|memory|allocat|type system|async|runtime|kernel|emulat|gpu|cache|index|query|parser|lexer|garbage|borrow| ownership|parallel|concurren|distribut|raft|consensus|encryption|unicode|render|shader|ffi|abi|simd|vectoriz|signing|trade|acquisition|injury|championship|verdict|ceasefire|election|sanction|inflation|treatment|breakthrough|hypothetical)\b/i
+
+export const SUBS: { key: string; display: string; placeholder: string }[] = [
+  { key: 'programming', display: 'r/programming', placeholder: 'What do you want to read about? e.g. memory management, compilers, developer careers' },
+  { key: 'worldnews', display: 'r/worldnews', placeholder: 'What do you want to read about? e.g. Ukraine, climate, elections' },
+  { key: 'askreddit', display: 'r/AskReddit', placeholder: 'What kind of stories do you want? e.g. workplace, travel, childhood' },
+  { key: 'mma', display: 'r/MMA', placeholder: 'What do you want to read about? e.g. UFC, Dana White, striking' },
+  { key: 'nba', display: 'r/nba', placeholder: 'What do you want to read about? e.g. Lakers, trades, playoffs' },
+]
+
+export const SUB_CATEGORY_LABELS: Record<string, Record<string, string>> = {
+  programming: {
+    technical_article: 'Technical article',
+    release_news: 'Release news',
+    opinion_discussion: 'Opinion / discussion',
+    security: 'Security',
+    show_project: 'Show project',
+    career_meta: 'Career / meta',
+    other: 'Other',
+  },
+  worldnews: {
+    politics: 'Politics',
+    conflict: 'Conflict',
+    economy: 'Economy',
+    science_tech: 'Science / tech',
+    disaster: 'Disaster',
+    society: 'Society',
+    other: 'Other',
+  },
+  askreddit: {
+    story_sharing: 'Story sharing',
+    opinion_debate: 'Opinion / debate',
+    hypothetical: 'Hypothetical',
+    advice: 'Advice',
+    would_you_rather: 'Would you rather',
+    other: 'Other',
+  },
+  mma: {
+    fight_news: 'Fight news',
+    event_coverage: 'Event coverage',
+    analysis: 'Analysis',
+    rumor: 'Rumor',
+    discussion: 'Discussion',
+    other: 'Other',
+  },
+  nba: {
+    game_recap: 'Game recap',
+    trade_rumors: 'Trade rumors',
+    player_news: 'Player news',
+    analysis: 'Analysis',
+    discussion: 'Discussion',
+    other: 'Other',
+  },
+}
+
+const HEURISTIC_CATEGORY_KEYWORDS: Record<string, [string, RegExp][]> = {
+  programming: [
+    ['release_news', /released|release|launch|announc/i],
+    ['security', /attack|vulnerab|security|malware/i],
+    ['opinion_discussion', /rant|opinion|law|think|why\b/i],
+    ['show_project', /building|making|built|introducing/i],
+  ],
+  worldnews: [
+    ['conflict', /war|missile|strike|troops|ceasefire|attack/i],
+    ['economy', /inflation|market|trade|tariff|economy|gdp/i],
+    ['science_tech', /nasa|space|ai\b|quantum|clinical|vaccine/i],
+    ['disaster', /earthquake|flood|wildfire|hurricane|death toll/i],
+    ['politics', /election|president|minister|parliament|senat/i],
+  ],
+  askreddit: [
+    ['story_sharing', /what is the|what's the|what was|most memorable|ever had|experience/i],
+    ['would_you_rather', /would you rather/i],
+    ['hypothetical', /what if|if you could|if you were/i],
+    ['advice', /should i\b|how do i\b|need help/i],
+  ],
+  mma: [
+    ['fight_news', /announc|scheduled|vs\.|booking|sign/i],
+    ['event_coverage', /ufc \d+|results?|recap|highlight/i],
+    ['rumor', /rumor|reportedly|linked to/i],
+  ],
+  nba: [
+    ['game_recap', /beat|win|wins? over|finals?|game \d/i],
+    ['trade_rumors', /trade|signing|contract|waiv/i],
+    ['injury', /injury|out for|torn/i],
+    ['analysis', /stats?|ranked|rating|efficiency/i],
+  ],
+}
 
 /** Heuristic fallback used until Jev judgments are available (no API key). */
 function heuristicJudgment(post: Post, query: string): Judgment {
   const title = post.title
   const cb = CLICKBAIT_RE.test(title) ? 0.75 : 0.1
   let insight = 0.3
-  if (TECH_TERM_RE.test(title)) insight += 0.3
+  if (SUBSTANTIVE_RE.test(title)) insight += 0.3
   if (title.length > 45) insight += 0.15
-  if (/released|announc|launch/i.test(title)) insight += 0.1
+  if (/released|announc|launch|signing|trade|election|results?/i.test(title)) insight += 0.1
   insight = Math.min(1, insight)
   let category = 'other'
-  if (/released|release|launch|announc/i.test(title)) category = 'release_news'
-  else if (/attack|vulnerab|security|malware/i.test(title)) category = 'security'
-  else if (/rant|opinion|law|think|why\b/i.test(title)) category = 'opinion_discussion'
-  else if (/building|making|built|introducing/i.test(title)) category = 'show_project'
+  const sub = post.subreddit?.replace(/^r\//i, '').toLowerCase() ?? ''
+  const rules = HEURISTIC_CATEGORY_KEYWORDS[sub] ?? []
+  for (const [cat, re] of rules) {
+    if (re.test(title)) {
+      category = cat
+      break
+    }
+  }
   let relevance = 0.5
   if (query) {
     const terms = query.toLowerCase().split(/\W+/).filter(Boolean)
@@ -109,18 +199,25 @@ export function formatAge(hours: number): string {
 }
 
 export const CATEGORY_LABELS: Record<string, string> = {
-  technical_article: 'Technical article',
-  release_news: 'Release news',
-  opinion_discussion: 'Opinion / discussion',
-  security: 'Security',
-  show_project: 'Show project',
-  career_meta: 'Career / meta',
-  other: 'Other',
+  ...SUB_CATEGORY_LABELS.programming,
+  ...SUB_CATEGORY_LABELS.worldnews,
+  ...SUB_CATEGORY_LABELS.askreddit,
+  ...SUB_CATEGORY_LABELS.mma,
+  ...SUB_CATEGORY_LABELS.nba,
 }
 
-export function insightLabel(v: number): string {
-  if (v < 0.25) return 'Shallow'
-  if (v < 0.5) return 'Ordinary'
-  if (v < 0.75) return 'Substantive'
-  return 'Insightful'
+const INSIGHT_LABELS: Record<string, [string, string, string, string]> = {
+  programming: ['Shallow', 'Ordinary', 'Substantive', 'Insightful'],
+  worldnews: ['Trivial', 'Minor', 'Significant', 'Major'],
+  askreddit: ['Low effort', 'Decent', 'Good', 'Great'],
+  mma: ['Low value', 'Routine', 'Solid', 'Must-see'],
+  nba: ['Low value', 'Routine', 'Solid', 'Must-see'],
+}
+
+export function insightLabel(v: number, sub = 'programming'): string {
+  const labels = INSIGHT_LABELS[sub] ?? INSIGHT_LABELS.programming
+  if (v < 0.25) return labels[0]
+  if (v < 0.5) return labels[1]
+  if (v < 0.75) return labels[2]
+  return labels[3]
 }

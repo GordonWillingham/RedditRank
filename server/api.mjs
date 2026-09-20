@@ -1,16 +1,127 @@
 // RedditRank API — served as Vite dev-server middleware so `npm run dev`
 // serves frontend + backend in one process. The TypeSafe API key stays here,
 // server-side, never in the client bundle.
+//
+// Multi-subreddit: posts and Jev judgment caches live per subreddit under
+// server/data/posts-<sub>.json and judgments-<sub>.json.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DATA_DIR = path.join(__dirname, 'data')
-const POSTS_FILE = path.join(DATA_DIR, 'posts.json')
-const CACHE_FILE = path.join(DATA_DIR, 'judgments.json')
 const ENV_FILE = path.join(__dirname, '.env')
 const TS_URL = 'https://api.typesafe.ai/v1/systemone'
+
+// ---- Subreddit registry: each gets its own Jev rubric tuned to the domain ----
+
+export const SUBREDDITS = {
+  programming: {
+    display: 'r/programming',
+    insight:
+      'Rate how substantive and valuable this Reddit post is likely to be for a working programmer, based on its title and flair. Favor technical depth, novel ideas, and strong practical lessons; penalize memes, shallow chatter, and content-free linkbait.',
+    insightCriteria: [
+      'Shallow or meme-tier: little substance for a programmer',
+      'Ordinary: decent but unremarkable technical content',
+      'Substantive: real technical depth, a novel idea, or strong practical lessons',
+      'Insightful: likely to change how a programmer thinks or works',
+    ],
+    categories: {
+      technical_article: 'Explains a technical concept, technique, or deep dive',
+      release_news: 'Announcement of a release, version, or launch',
+      opinion_discussion: 'Opinion piece, essay, rant, or discussion prompt',
+      security: 'Security vulnerability, attack, or defensive practice',
+      show_project: 'Someone showing off something they built',
+      career_meta: 'Career, hiring, workplace, or industry-meta topic',
+      other: 'Anything else',
+    },
+  },
+  worldnews: {
+    display: 'r/worldnews',
+    insight:
+      'Rate how newsworthy and significant this post is for someone keeping up with global events, based on its title and flair. Favor major geopolitical developments, impactful events, and credible reporting; penalize minor incidents, repetitive stories, and sensational filler.',
+    insightCriteria: [
+      'Trivial: minor local incident or filler with little global significance',
+      'Minor: some interest but limited broader impact',
+      'Significant: a real development people following world events should know',
+      'Major: a consequential event likely to shape geopolitics or global headlines',
+    ],
+    categories: {
+      politics: 'Elections, governments, diplomacy, or political developments',
+      conflict: 'War, military action, terrorism, or civil unrest',
+      economy: 'Trade, markets, inflation, or economic policy',
+      science_tech: 'Scientific discovery, space, or technology news',
+      disaster: 'Natural disasters, accidents, or humanitarian crises',
+      society: 'Social movements, human rights, or cultural developments',
+      other: 'Anything else',
+    },
+  },
+  askreddit: {
+    display: 'r/AskReddit',
+    insight:
+      "Rate how good this AskReddit prompt is at sparking interesting stories and discussion, based on its title. Favor prompts that invite vivid personal stories, novel hypotheticals, or genuine debate; penalize over-asked reposts, yes/no questions, and low-effort prompts.",
+    insightCriteria: [
+      'Low effort: a yes/no question, an over-asked repost, or prompts no real stories',
+      'Decent: should get ordinary answers but nothing memorable',
+      'Good: likely to draw engaging personal stories or lively debate',
+      'Great: a prompt people will still be telling stories about in the comments',
+    ],
+    categories: {
+      story_sharing: 'Asks people to share personal stories or experiences',
+      opinion_debate: 'Invites opinions, preferences, or debate',
+      hypothetical: 'A "what would you do / what if" scenario',
+      advice: 'Asks for advice or help with a situation',
+      would_you_rather: "A 'would you rather' style either/or prompt",
+      other: 'Anything else',
+    },
+  },
+  mma: {
+    display: 'r/MMA',
+    insight:
+      'Rate how valuable this post is to a mixed martial arts fan, based on its title and flair. Favor fight announcements, results, matchup news, and quality analysis; penalize shitposts, repetitive rumors, and low-effort memes.',
+    insightCriteria: [
+      'Low value: shitpost, meme, or content most fans would scroll past',
+      'Routine: ordinary fan content with limited new information',
+      'Solid: real fight news, results, or analysis worth a fan’s time',
+      'Must-see: breaking news or elite analysis the community will talk about',
+    ],
+    categories: {
+      fight_news: 'Fight announcements, results, or card changes',
+      event_coverage: 'Live event discussion, highlights, or recaps',
+      analysis: 'Technical breakdowns, strategy, or fighter evaluation',
+      rumor: 'Unsigned rumors, speculation, or negotiation reports',
+      discussion: 'Fan questions, debates, or community topics',
+      other: 'Anything else',
+    },
+  },
+  nba: {
+    display: 'r/nba',
+    insight:
+      'Rate how valuable this post is to an NBA fan, based on its title and flair. Favor trades, signings, injury news, game highlights, and sharp analysis; penalize low-effort memes, stale reposts, and off-court filler.',
+    insightCriteria: [
+      'Low value: meme, shitpost, or content most fans would scroll past',
+      'Routine: ordinary fan content with limited new information',
+      'Solid: real basketball news, highlights, or analysis worth a fan’s time',
+      'Must-see: breaking news or a moment the community will be talking about',
+    ],
+    categories: {
+      game_recap: 'Game results, highlights, or post-game coverage',
+      trade_rumors: 'Trades, signings, or transaction rumors',
+      player_news: 'Injuries, milestones, or off-court player news',
+      analysis: 'Strategy, stats, or basketball analysis',
+      discussion: 'Fan questions, debates, or community topics',
+      other: 'Anything else',
+    },
+  },
+}
+
+export function resolveSub(raw) {
+  const sub = String(raw || '').toLowerCase().replace(/^r\//, '')
+  return SUBREDDITS[sub] ? sub : null
+}
+
+const postsFile = (sub) => path.join(DATA_DIR, `posts-${sub}.json`)
+const cacheFile = (sub) => path.join(DATA_DIR, `judgments-${sub}.json`)
 
 export function readApiKey() {
   if (process.env.TYPESAFE_API_KEY) return process.env.TYPESAFE_API_KEY.trim()
@@ -50,7 +161,9 @@ function readBody(req) {
 }
 
 export async function handlePosts(req, res) {
-  sendJson(res, 200, readJson(POSTS_FILE, { posts: [] }))
+  const url = new URL(req.url || '', 'http://localhost')
+  const sub = resolveSub(url.searchParams.get('sub')) || 'programming'
+  sendJson(res, 200, readJson(postsFile(sub), { posts: [] }))
 }
 
 // ---- TypeSafe / Jev integration ----
@@ -77,18 +190,12 @@ async function tsEvaluate(apiKey, state, questions, retries = 4) {
   }
 }
 
-function baseQuestions() {
+function baseQuestions(rubric) {
   return {
     insight: {
       type: 'score',
-      instructions:
-        'Rate how substantive and valuable this Reddit post is likely to be for a working programmer, based on its title and flair. Favor technical depth, novel ideas, and strong practical lessons; penalize memes, shallow chatter, and content-free linkbait.',
-      criteria: [
-        'Shallow or meme-tier: little substance for a programmer',
-        'Ordinary: decent but unremarkable technical content',
-        'Substantive: real technical depth, a novel idea, or strong practical lessons',
-        'Insightful: likely to change how a programmer thinks or works',
-      ],
+      instructions: rubric.insight,
+      criteria: rubric.insightCriteria,
     },
     clickbait: {
       type: 'noul',
@@ -102,15 +209,7 @@ function baseQuestions() {
     category: {
       type: 'choice',
       instructions: 'Pick the single best category for this post.',
-      criteria: {
-        technical_article: 'Explains a technical concept, technique, or deep dive',
-        release_news: 'Announcement of a release, version, or launch',
-        opinion_discussion: 'Opinion piece, essay, rant, or discussion prompt',
-        security: 'Security vulnerability, attack, or defensive practice',
-        show_project: 'Someone showing off something they built',
-        career_meta: 'Career, hiring, workplace, or industry-meta topic',
-        other: 'Anything else',
-      },
+      criteria: rubric.categories,
     },
   }
 }
@@ -159,18 +258,26 @@ export async function handleScore(req, res) {
     return
   }
   try {
-    const { query = '' } = await readBody(req)
-    const posts = readJson(POSTS_FILE, { posts: [] }).posts
-    const cache = readJson(CACHE_FILE, { base: {}, relevance: {} })
+    const body = await readBody(req)
+    const sub = resolveSub(body.sub)
+    if (!sub) {
+      sendJson(res, 400, { ok: false, error: `Unknown subreddit: ${body.sub}` })
+      return
+    }
+    const rubric = SUBREDDITS[sub]
+    const { query = '' } = body
+    const posts = readJson(postsFile(sub), { posts: [] }).posts
+    const CACHE = cacheFile(sub)
+    const cache = readJson(CACHE, { base: {}, relevance: {} })
     cache.base = cache.base || {}
     cache.relevance = cache.relevance || {}
-    const q = query.trim()
+    const q = String(query).trim()
 
     // 1. Query-independent judgments (insight / clickbait / category), cached per post.
     const needBase = posts.filter((p) => !cache.base[p.id])
     if (needBase.length) {
       await mapWithConcurrency(needBase, 5, async (post) => {
-        const out = await tsEvaluate(apiKey, postState(post), baseQuestions())
+        const out = await tsEvaluate(apiKey, postState(post), baseQuestions(rubric))
         const a = out.answers
         cache.base[post.id] = {
           insight: a.insight.score / 3,
@@ -202,7 +309,7 @@ export async function handleScore(req, res) {
       relevance = cache.relevance[q]
     }
 
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2))
+    fs.writeFileSync(CACHE, JSON.stringify(cache, null, 2))
 
     const judgments = {}
     for (const p of posts) {
@@ -211,7 +318,7 @@ export async function handleScore(req, res) {
         ...(relevance && relevance[p.id] ? relevance[p.id] : {}),
       }
     }
-    sendJson(res, 200, { ok: true, model: 'jev-latest', query: q, judgments })
+    sendJson(res, 200, { ok: true, model: 'jev-latest', sub, query: q, judgments })
   } catch (err) {
     sendJson(res, 500, { ok: false, error: String(err.message || err) })
   }

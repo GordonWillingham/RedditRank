@@ -10,6 +10,7 @@ server/.env
 
 # Local data caches (baked copies live in public/data for static builds)
 server/data/judgments.json
+server/data/judgments-*.json
 
 # OS / editor noise
 .DS_Store

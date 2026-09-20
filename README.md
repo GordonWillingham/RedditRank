@@ -1,23 +1,26 @@
 # RedditRank
 
-AI-ranked digest of [r/programming](https://www.reddit.com/r/programming/). Posts are scraped from Reddit, judged by **TypeSafe's Jev** (a System One model that returns typed answers and probabilities instead of text), and blended with community signals in plain code — so you can re-rank the front page by substance, not just upvotes.
+AI-ranked digest of five very different subreddits — [r/programming](https://www.reddit.com/r/programming/), [r/worldnews](https://www.reddit.com/r/worldnews/), [r/AskReddit](https://www.reddit.com/r/AskReddit/), [r/MMA](https://www.reddit.com/r/MMA/), and [r/nba](https://www.reddit.com/r/nba/). Posts are scraped from Reddit, judged by **TypeSafe's Jev** (a System One model that returns typed answers and probabilities instead of text), and blended with community signals in plain code — so you can re-rank the front page by substance, not just upvotes.
 
 ![RedditRank dark UI](docs/screenshot.png)
 
 ## Why it's interesting
 
-Raw Reddit ranking rewards whatever is already popular. RedditRank asks a different question: *which posts are actually worth a programmer's time?* Jev scores every post on semantic dimensions a vote count can't capture:
+Raw Reddit ranking rewards whatever is already popular. RedditRank asks a different question: *which posts are actually worth your time?* Jev scores every post on semantic dimensions a vote count can't capture:
 
-- **Insight** — a graded score from *shallow* to *insightful*, based on technical depth and practical value
+- **Insight** — a graded score tuned to each domain: *shallow → insightful* for programming, *trivial → major* for world news, *low effort → great* for AskReddit prompts, *low value → must-see* for MMA and NBA
 - **Clickbait** — a probability that the title is sensationalized ragebait
-- **Category** — technical article, release news, opinion, security, show project, career/meta
+- **Category** — domain-specific buckets: release news / security / show project for programming; conflict / economy / disaster for worldnews; story sharing / hypothetical for AskReddit; fight news / event coverage for MMA; trade rumors / game recap for NBA
 - **Topic relevance** — graded relevance to whatever you're trying to read about (optional query)
+
+Same model primitives, different rubric per subreddit — so Jev judges an AskReddit prompt on story potential and a worldnews headline on geopolitical significance, rather than applying one generic notion of "quality".
 
 Code then owns the ranking: a weighted composite of insight, relevance, community votes, and freshness. Dragging a slider re-ranks instantly — **the judgments are computed once and reused; changing weights never re-runs inference.**
 
 ## Features
 
-- Type a topic (e.g. "compilers and programming languages") and watch the front page re-rank by relevance
+- Subreddit switcher across all five communities — each with its own scraped data, rubric, and judgment cache
+- Type a topic (e.g. "compilers and programming languages", "UFC title fights") and watch the front page re-rank by relevance
 - Five live sliders: insight weight, topic relevance, community votes, freshness, clickbait tolerance
 - Category filter chips and per-post badges (insight grade, category, clickbait %)
 - Dark mode by default
@@ -26,16 +29,18 @@ Code then owns the ranking: a weighted composite of insight, relevance, communit
 ## How it works
 
 ```
-Reddit (RSS or in-app scrape)
+Reddit (in-app browser scrape → server/data/posts-<sub>.json)
         │
         ▼
 ┌─────────────────┐     ┌──────────────────────────┐
 │  server/api.mjs │────▶│  TypeSafe Jev (jev-latest)│  ← key stays server-side
-│  (dev middleware)│     │  insight / clickbait /    │
-└─────────────────┘     │  category / relevance     │
-        │               └──────────────────────────┘
+│  (dev middleware)│     │  per-subreddit rubric:    │
+│  /api/posts?sub=│     │  insight / clickbait /    │
+│  /api/score     │     │  category / relevance     │
+└─────────────────┘     └──────────────────────────┘
+        │                            │
         ▼                            │
-  posts + judgments ◀────────────────┘
+  posts + judgments per sub ◀────────┘
         │
         ▼
   Composite scoring in the client (weights you control)
@@ -44,7 +49,7 @@ Reddit (RSS or in-app scrape)
   Ranked, filterable post list
 ```
 
-Jev judgments are cached per post, and per (topic, post) for relevance — the same post is never judged twice.
+Jev judgments are cached per (subreddit, post), and per (subreddit, topic, post) for relevance — the same post is never judged twice. Adding a new subreddit means dropping in a `posts-<sub>.json` scrape and a rubric entry in `server/api.mjs`.
 
 ## Tech stack
 
@@ -75,9 +80,9 @@ npm run preview    # serve the production build locally
 
 **Static (GitHub Pages, Netlify drop, any static host)** — `npm run build` and publish `dist/`. The demo renders real Jev rankings from build-time cached judgments. Note: topic-relevance queries need the live backend, so the static demo re-uses cached judgments and falls back gracefully.
 
-**Live scoring (Vercel, Netlify Functions, etc.)** — the dev API in `server/api.mjs` needs to be adapted to a serverless function (store `TYPESAFE_API_KEY` as an env var, never in the client). The frontend talks to `/api/posts`, `/api/health`, and `POST /api/score { query }`.
+**Live scoring (Vercel, Netlify Functions, etc.)** — the dev API in `server/api.mjs` needs to be adapted to a serverless function (store `TYPESAFE_API_KEY` as an env var, never in the client). The frontend talks to `/api/posts?sub=<key>`, `/api/health`, and `POST /api/score { sub, query }`.
 
 ## Notes
 
-- Reddit data is fetched from the public RSS feed / web page for personal, non-commercial use, per Reddit's terms. Refresh the scrape before demos.
+- Reddit data is scraped from the in-app browser (same-origin JSON fetch) for personal, non-commercial use, per Reddit's terms. Refresh the scrape before demos.
 - This repository intentionally contains **no API keys**. `server/.env` is git-ignored; only `server/.env.example` ships.

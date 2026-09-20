@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -15,6 +15,8 @@ import {
   formatAge,
   domainOf,
   CATEGORY_LABELS,
+  SUBS,
+  SUB_CATEGORY_LABELS,
   insightLabel,
   type Weights,
   type ScoredPost,
@@ -39,6 +41,7 @@ function WeightSlider({ label, value, onChange }: WeightSliderProps) {
 }
 
 export default function Home() {
+  const [sub, setSub] = useState('programming')
   const [postFile, setPostFile] = useState<PostFile | null>(null)
   const [judgments, setJudgments] = useState<Record<string, Judgment>>({})
   const [engine, setEngine] = useState<Engine>('heuristic')
@@ -56,9 +59,13 @@ export default function Home() {
   const [clickbaitTol, setClickbaitTol] = useState(70)
   const [cats, setCats] = useState<Set<string> | null>(null)
 
-  const loadBakedJudgments = async (): Promise<boolean> => {
+  const subDisplay = SUBS.find((s) => s.key === sub)?.display ?? `r/${sub}`
+  const placeholder = SUBS.find((s) => s.key === sub)?.placeholder ?? 'What do you want to read about?'
+  const catLabels: Record<string, string> = { ...CATEGORY_LABELS, ...(SUB_CATEGORY_LABELS[sub] ?? {}) }
+
+  const loadBakedJudgments = useCallback(async (s: string): Promise<boolean> => {
     try {
-      const r = await fetch(`${import.meta.env.BASE_URL}data/judgments.json`)
+      const r = await fetch(`${import.meta.env.BASE_URL}data/${s}/judgments.json`)
       if (!r.ok) return false
       const baked = (await r.json()) as Record<string, Judgment>
       if (!baked || Object.keys(baked).length === 0) return false
@@ -69,10 +76,51 @@ export default function Home() {
     } catch {
       return false
     }
-  }
+  }, [])
+
+  const runJev = useCallback(
+    async (s: string, q: string) => {
+      setScoring(true)
+      setNotice(null)
+      try {
+        const r = await fetch('/api/score', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sub: s, query: q }),
+        })
+        const d = await r.json()
+        if (!d.ok) {
+          const usedBaked = await loadBakedJudgments(s)
+          if (!usedBaked) {
+            setNotice(d.error || 'Jev scoring failed; using heuristic mode.')
+            setEngine('heuristic')
+          }
+        } else {
+          setJudgments(d.judgments)
+          setEngine('jev')
+        }
+      } catch {
+        const usedBaked = await loadBakedJudgments(s)
+        if (!usedBaked) {
+          setNotice('Jev scoring failed; using heuristic mode.')
+          setEngine('heuristic')
+        }
+      } finally {
+        setScoring(false)
+      }
+    },
+    [loadBakedJudgments]
+  )
 
   useEffect(() => {
-    fetch('/api/posts')
+    setPostFile(null)
+    setJudgments({})
+    setEngine('heuristic')
+    setQuery('')
+    setQueryInput('')
+    setNotice(null)
+    setCats(null)
+    fetch(`/api/posts?sub=${sub}`)
       .then((r) => {
         if (!r.ok) throw new Error('no api')
         return r.json()
@@ -80,7 +128,7 @@ export default function Home() {
       .then((d: PostFile) => setPostFile(d))
       .catch(() => {
         // Static hosting (e.g. GitHub Pages): fall back to baked-in scrape data.
-        fetch(`${import.meta.env.BASE_URL}data/posts.json`)
+        fetch(`${import.meta.env.BASE_URL}data/${sub}/posts.json`)
           .then((r) => r.json())
           .then((d: PostFile) => setPostFile(d))
           .catch(() => setNotice('Could not load scraped posts.'))
@@ -89,45 +137,14 @@ export default function Home() {
       .then((r) => r.json())
       .then((d) => {
         setHasKey(!!d.key)
-        if (d.key) runJev('')
-        else void loadBakedJudgments()
+        if (d.key) runJev(sub, '')
+        else void loadBakedJudgments(sub)
       })
       .catch(() => {
         setHasKey(false)
-        void loadBakedJudgments()
+        void loadBakedJudgments(sub)
       })
-  }, [])
-
-  const runJev = async (q: string) => {
-    setScoring(true)
-    setNotice(null)
-    try {
-      const r = await fetch('/api/score', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q }),
-      })
-      const d = await r.json()
-      if (!d.ok) {
-        const usedBaked = await loadBakedJudgments()
-        if (!usedBaked) {
-          setNotice(d.error || 'Jev scoring failed; using heuristic mode.')
-          setEngine('heuristic')
-        }
-      } else {
-        setJudgments(d.judgments)
-        setEngine('jev')
-      }
-    } catch {
-      const usedBaked = await loadBakedJudgments()
-      if (!usedBaked) {
-        setNotice('Jev scoring failed; using heuristic mode.')
-        setEngine('heuristic')
-      }
-    } finally {
-      setScoring(false)
-    }
-  }
+  }, [sub, runJev, loadBakedJudgments])
 
   const scored: ScoredPost[] = useMemo(() => {
     if (!postFile) return []
@@ -156,6 +173,11 @@ export default function Home() {
     })
   }
 
+  const applyQuery = (q: string) => {
+    setQuery(q)
+    if (hasKey) runJev(sub, q)
+  }
+
   const scrapeTime = postFile?.scrapeTime
     ? new Date(postFile.scrapeTime).toLocaleString()
     : ''
@@ -163,7 +185,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
-        <header className="space-y-1">
+        <header className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-3xl font-bold tracking-tight">RedditRank</h1>
             <Badge variant={engine === 'jev' ? 'default' : 'secondary'} className="gap-1">
@@ -171,8 +193,20 @@ export default function Home() {
               {engine === 'jev' ? 'Ranked by Jev' : 'Heuristic mode'}
             </Badge>
           </div>
+          <div className="flex flex-wrap gap-1.5">
+            {SUBS.map((s) => (
+              <Badge
+                key={s.key}
+                variant={s.key === sub ? 'default' : 'outline'}
+                className="cursor-pointer text-sm px-3 py-1"
+                onClick={() => setSub(s.key)}
+              >
+                {s.display}
+              </Badge>
+            ))}
+          </div>
           <p className="text-sm text-muted-foreground">
-            r/programming · hot · scraped in-app · semantic judgments by TypeSafe System One (Jev),
+            {subDisplay} · hot · scraped in-app · semantic judgments by TypeSafe System One (Jev),
             blended with community signals in plain code
             {scrapeTime ? ` · scraped ${scrapeTime}` : ''}
           </p>
@@ -181,23 +215,14 @@ export default function Home() {
         <Card className="p-4 space-y-4">
           <div className="flex gap-2">
             <Input
-              placeholder="What do you want to read about? e.g. memory management, compilers, developer careers"
+              placeholder={placeholder}
               value={queryInput}
               onChange={(e) => setQueryInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  setQuery(queryInput.trim())
-                  if (hasKey) runJev(queryInput.trim())
-                }
+                if (e.key === 'Enter') applyQuery(queryInput.trim())
               }}
             />
-            <Button
-              onClick={() => {
-                setQuery(queryInput.trim())
-                if (hasKey) runJev(queryInput.trim())
-              }}
-              disabled={scoring}
-            >
+            <Button onClick={() => applyQuery(queryInput.trim())} disabled={scoring}>
               {scoring ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
               {scoring ? 'Judging…' : hasKey ? 'Rank with Jev' : 'Apply topic'}
             </Button>
@@ -231,7 +256,7 @@ export default function Home() {
                     className="cursor-pointer"
                     onClick={() => toggleCat(c)}
                   >
-                    {CATEGORY_LABELS[c] ?? c}
+                    {catLabels[c] ?? c}
                   </Badge>
                 )
               })}
@@ -271,9 +296,9 @@ export default function Home() {
                   </span>
                   <span>{formatAge(s.ageHours)} ago</span>
                   {s.judgment.category && (
-                    <Badge variant="outline">{CATEGORY_LABELS[s.judgment.category] ?? s.judgment.category}</Badge>
+                    <Badge variant="outline">{catLabels[s.judgment.category] ?? s.judgment.category}</Badge>
                   )}
-                  <Badge variant="secondary">{insightLabel(s.components.insight)}</Badge>
+                  <Badge variant="secondary">{insightLabel(s.components.insight, sub)}</Badge>
                   <a
                     href={s.post.link.startsWith('/') ? `https://www.reddit.com${s.post.link}` : s.post.link}
                     target="_blank"
