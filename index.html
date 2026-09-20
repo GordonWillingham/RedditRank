@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RedditRank</title>
+    <script>
+      // Diagnostics: capture early errors for deployment debugging.
+      window.__errs = [];
+      window.addEventListener('error', function (e) {
+        window.__errs.push(String(e.message || e.error || e));
+        document.title = 'ERR: ' + String(e.message || e).slice(0, 120);
+      }, true);
+      window.addEventListener('unhandledrejection', function (e) {
+        window.__errs.push('rejection: ' + String((e.reason && e.reason.message) || e.reason).slice(0, 200));
+        document.title = 'REJ: ' + String((e.reason && e.reason.message) || e.reason).slice(0, 120);
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>
